@@ -53,18 +53,23 @@ if [ -f "/data/expressvpn.run" ]; then
   log "Found local installer. Forcing manual extraction..."
   chmod +x "/data/expressvpn.run"
   
-  # Extract to a specific directory without running the broken install script
-  mkdir -p /tmp/evpn-extract
+  # 1. Clear and create extract dir
+  rm -rf /tmp/evpn-extract && mkdir -p /tmp/evpn-extract
+  
+  # 2. Extract files
   "/data/expressvpn.run" --target /tmp/evpn-extract --nox11 --accept || true
   
-  # Manually move the binaries to the system path
-  # The installer usually puts them in a subfolder of the target
-  cp -r /tmp/evpn-extract/* /usr/ 2>/dev/null || true
-  cp /tmp/evpn-extract/expressvpn* /usr/bin/ 2>/dev/null || true
+  # 3. Use 'find' to locate the binaries and move them to /usr/bin
+  # The installer often puts them in /tmp/evpn-extract/usr/bin/
+  log "Moving binaries to /usr/bin..."
+  find /tmp/evpn-extract -name "expressvpn" -exec cp {} /usr/bin/ \;
+  find /tmp/evpn-extract -name "expressvpnd" -exec cp {} /usr/bin/ \;
   
-  # Essential: Version 4 often needs the service file to exist even if not used
-  touch /etc/init.d/expressvpn
-  chmod +x /etc/init.d/expressvpn
+  # 4. Move libraries (CRITICAL for v4)
+  log "Moving libraries to /usr/lib..."
+  find /tmp/evpn-extract -name "*.so*" -exec cp {} /usr/lib/ \;
+  
+  chmod +x /usr/bin/expressvpn*
   
   #mv "/data/expressvpn.run" "/data/expressvpn.run.installed"
   log "Manual extraction complete."
