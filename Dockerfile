@@ -10,31 +10,16 @@
 # Override at build time: docker build --build-arg APP_VERSION=4.0.2 .
 ARG APP_VERSION=4.0.1
 
-# ── Stage 1: Local installer prep ──────────────────────────────────────────────
-# By default we look for `releases/expressvpn.run`
-# You can override this with the EXPRESSVPN_INSTALLER env var in your .env file
-FROM debian:bookworm-slim AS downloader
-
-ARG INSTALLER_FILE=releases/expressvpn.run
-COPY ${INSTALLER_FILE} /tmp/expressvpn.run
-RUN chmod +x /tmp/expressvpn.run
-# ── Stage 2: Final runtime image ───────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
 
 LABEL maintainer="expressvpn-docker-gateway"
 LABEL description="ExpressVPN gateway container — Lightway protocol, iptables NAT + kill-switch"
 LABEL org.opencontainers.image.source="https://github.com/expressvpn"
 
-FROM debian:bookworm-slim AS runtime
 # v4 no longer requires NetworkManager (libnm0) or ReadKey
 RUN apt-get update && apt-get install -y --no-install-recommends \
     expect iproute2 iptables ca-certificates procps curl socat \
     && rm -rf /var/lib/apt/lists/*
-
-# Install ExpressVPN v4 via the universal installer
-COPY --from=downloader /tmp/expressvpn.deb /tmp/expressvpn.deb
-
-RUN dpkg -i /tmp/expressvpn.deb || apt-get install -f -y && \
-    rm /tmp/expressvpn.deb
 # ── Scripts ────────────────────────────────────────────────────────────────────
 COPY scripts/entrypoint.sh      /usr/local/bin/entrypoint.sh
 COPY scripts/activate.exp       /usr/local/bin/activate.exp
