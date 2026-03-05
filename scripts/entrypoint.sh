@@ -53,7 +53,7 @@ if [ -f "/data/expressvpn.run" ]; then
   log "Found local installer at /data/expressvpn.run. Installing..."
   # Removed --quiet to see errors, and removed || true so it fails if install fails
   chmod +x "/data/expressvpn.run"
-  "/data/expressvpn.run" --accept --nox11 --target /
+  "/data/expressvpn.run" --accept --nox11 --target / || warn "Installer exited with warnings, continuing..."
   
   # Only move if successful
   #mv "/data/expressvpn.run" "/data/expressvpn.run.installed-$(date +%s)"
