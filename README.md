@@ -15,9 +15,16 @@ A lightweight, ExpressVPN-native Docker container that replaces **gluetun** as a
 
 ## Quick Start
 
-### 1. Get Your Activation Code
+### 1. Get Your Activation Code & Installer
 
-Login at [expressvpn.com/setup#manual](https://www.expressvpn.com/setup#manual) and copy your **Activation Code** (not your password).
+1. Login at [expressvpn.com/setup#manual](https://www.expressvpn.com/setup#manual)
+2. Copy your **Activation Code**
+3. Navigate to **Download App -> Linux** and download the Universal Installer (`.run` file)
+4. Rename the downloaded file to `expressvpn.run` and place it in the `releases/` folder within this project:
+   ```bash
+   mkdir -p releases
+   mv ~/Downloads/expressvpn_*_amd64.run releases/expressvpn.run
+   ```
 
 ### 2. Configure Environment
 

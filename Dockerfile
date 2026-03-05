@@ -10,21 +10,14 @@
 # Override at build time: docker build --build-arg APP_VERSION=4.0.2 .
 ARG APP_VERSION=4.0.1
 
-# ── Stage 1: Download the installer (isolates network fetch from final image) ──
-# v4 ships a universal shell installer that wraps the .deb internally.
-# The official download URL pattern for v4+:
-#   https://www.expressvpn.com/clients/linux/expressvpn_<VER>_amd64.run
-# (The .works mirror is for v3 only and does not carry v4 packages.)
+# ── Stage 1: Local installer prep ──────────────────────────────────────────────
+# We now use a locally downloaded installer file instead of fetching from the web
+# Place the downloaded .run file from ExpressVPN into the `releases/` directory
+# and name it `expressvpn.run`.
 FROM debian:bookworm-slim AS downloader
 
-ARG TARGETARCH
-
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
-    if [ "$TARGETARCH" = "arm64" ]; then ARCH="arm64"; else ARCH="amd64"; fi && \
-    curl -fsSL -A "Mozilla/5.0" \
-    "https://www.expressvpn.com/clients/linux/expressvpn_latest_${ARCH}.run" \
-    -o /tmp/expressvpn.run && \
-    chmod +x /tmp/expressvpn.run
+COPY releases/expressvpn.run /tmp/expressvpn.run
+RUN chmod +x /tmp/expressvpn.run
 # ── Stage 2: Final runtime image ───────────────────────────────────────────────
 
 LABEL maintainer="expressvpn-docker-gateway"
@@ -38,11 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ExpressVPN v4 via the universal installer
-COPY --from=downloader /tmp/expressvpn.run /tmp/expressvpn.run
+COPY --from=downloader /tmp/expressvpn.deb /tmp/expressvpn.deb
 
-# Install using the new --headless flag for container environments
-RUN sh /tmp/expressvpn.run --headless && rm /tmp/expressvpn.run
-
+RUN dpkg -i /tmp/expressvpn.deb || apt-get install -f -y && \
+    rm /tmp/expressvpn.deb
 # ── Scripts ────────────────────────────────────────────────────────────────────
 COPY scripts/entrypoint.sh      /usr/local/bin/entrypoint.sh
 COPY scripts/activate.exp       /usr/local/bin/activate.exp
