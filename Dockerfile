@@ -20,52 +20,29 @@ FROM debian:bookworm-slim AS downloader
 ARG APP_VERSION
 ARG TARGETARCH
 
-# Map Docker arch → ExpressVPN arch suffix (v4 supports amd64 and arm64)
-RUN ARCH="amd64"; \
-    [ "$TARGETARCH" = "arm64" ] && ARCH="arm64"; \
-    INSTALLER="expressvpn_${APP_VERSION}_${ARCH}.run"; \
-    apt-get update && apt-get install -y --no-install-recommends wget ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    wget -q "https://www.expressvpn.com/clients/linux/${INSTALLER}" -O /tmp/expressvpn.run && \
+# The v4 installer is a self-extracting .run shell script
+RUN apt-get update && apt-get install -y wget ca-certificates && \
+    ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+    wget -q "https://www.expressvpn.com/clients/linux/expressvpn_${APP_VERSION}_${ARCH}.run" -O /tmp/expressvpn.run && \
     chmod +x /tmp/expressvpn.run
 
 # ── Stage 2: Final runtime image ───────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
 
 LABEL maintainer="expressvpn-docker-gateway"
 LABEL description="ExpressVPN gateway container — Lightway protocol, iptables NAT + kill-switch"
 LABEL org.opencontainers.image.source="https://github.com/expressvpn"
 
-# Runtime dependencies only — keep image small
-# libterm-readkey-perl + expect: needed for non-interactive activation
-# iproute2: ip route / ip addr
-# iptables: NAT + kill-switch rules
-# procps: ps, used by healthcheck
-# libnm0: NetworkManager lib required by expressvpnd
-# curl: health probe + connectivity test
-# socat: lightweight HTTP server for health endpoint
-# v4 has reduced runtime dependencies vs v3:
-#   REMOVED: libnm0 (NetworkManager no longer required)
-#   REMOVED: libterm-readkey-perl (activation no longer needs it)
-#   KEPT:    expect (still needed for non-interactive `expressvpn activate`)
+FROM debian:bookworm-slim AS runtime
+# v4 no longer requires NetworkManager (libnm0) or ReadKey
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    expect \
-    iproute2 \
-    iptables \
-    ca-certificates \
-    procps \
-    curl \
-    socat \
+    expect iproute2 iptables ca-certificates procps curl socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ExpressVPN v4 via the universal installer
-# --headless flag: skip GUI setup, install daemon + CLI only
-# --no-gui: v4 flag to suppress GUI component installation
 COPY --from=downloader /tmp/expressvpn.run /tmp/expressvpn.run
-RUN /tmp/expressvpn.run --headless 2>/dev/null || \
-    sh /tmp/expressvpn.run --headless || \
-    apt-get install -fy 2>/dev/null ; \
-    rm /tmp/expressvpn.run
+
+# Install using the new --headless flag for container environments
+RUN sh /tmp/expressvpn.run --headless && rm /tmp/expressvpn.run
 
 # ── Scripts ────────────────────────────────────────────────────────────────────
 COPY scripts/entrypoint.sh      /usr/local/bin/entrypoint.sh
