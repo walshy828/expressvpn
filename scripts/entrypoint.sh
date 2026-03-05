@@ -53,7 +53,12 @@ if [ -f "/data/expressvpn.run" ]; then
   log "Found local installer at /data/expressvpn.run. Installing..."
   # Removed --quiet to see errors, and removed || true so it fails if install fails
   chmod +x "/data/expressvpn.run"
-  "/data/expressvpn.run" --accept --nox11 --target / || warn "Installer exited with warnings, continuing..."
+  # Extract to a temp directory first
+  mkdir -p /tmp/evpn-files
+  "/data/expressvpn.run" --target /tmp/evpn-files --nox11 --accept || true
+
+  find /tmp/evpn-files -type f -name "expressvpn*" -exec cp {} /usr/bin/ \;
+  chmod +x /usr/bin/expressvpn*
   
   # Only move if successful
   #mv "/data/expressvpn.run" "/data/expressvpn.run.installed-$(date +%s)"
