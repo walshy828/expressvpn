@@ -19,6 +19,7 @@ LABEL org.opencontainers.image.source="https://github.com/expressvpn"
 # v4 no longer requires NetworkManager (libnm0) or ReadKey
 RUN apt-get update && apt-get install -y --no-install-recommends \
     expect iproute2 iptables ca-certificates procps curl socat \
+    psmisc libatomic1 libglib2.0-0 libbrotli1 \
     && rm -rf /var/lib/apt/lists/*
 # ── Scripts ────────────────────────────────────────────────────────────────────
 COPY scripts/entrypoint.sh      /usr/local/bin/entrypoint.sh
