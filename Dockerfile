@@ -17,15 +17,14 @@ ARG APP_VERSION=4.0.1
 # (The .works mirror is for v3 only and does not carry v4 packages.)
 FROM debian:bookworm-slim AS downloader
 
-ARG APP_VERSION
 ARG TARGETARCH
 
-# The v4 installer is a self-extracting .run shell script
-RUN apt-get update && apt-get install -y wget ca-certificates && \
-    ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
-    wget -q "https://www.expressvpn.com/clients/linux/expressvpn_${APP_VERSION}_${ARCH}.run" -O /tmp/expressvpn.run && \
+RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates && \
+    # Map Docker arch to ExpressVPN's expected string
+    if [ "$TARGETARCH" = "arm64" ]; then ARCH="arm64"; else ARCH="amd64"; fi && \
+    # Use the 'latest' redirect link to avoid 404/Exit Code 8
+    wget -q --show-progress "https://www.expressvpn.com/clients/linux/expressvpn_latest_${ARCH}.run" -O /tmp/expressvpn.run && \
     chmod +x /tmp/expressvpn.run
-
 # ── Stage 2: Final runtime image ───────────────────────────────────────────────
 
 LABEL maintainer="expressvpn-docker-gateway"
