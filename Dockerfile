@@ -21,7 +21,7 @@ ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     if [ "$TARGETARCH" = "arm64" ]; then ARCH="arm64"; else ARCH="amd64"; fi && \
-    curl -L -A "Mozilla/5.0" \
+    curl -fsSL -A "Mozilla/5.0" \
     "https://www.expressvpn.com/clients/linux/expressvpn_latest_${ARCH}.run" \
     -o /tmp/expressvpn.run && \
     chmod +x /tmp/expressvpn.run
