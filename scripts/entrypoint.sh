@@ -51,7 +51,7 @@ cp /tmp/resolv.conf.bak /etc/resolv.conf
 # If you drop an installer into /docker/arr-stack/expressvpn/ (mapped to /data)
 if [ -f "/data/expressvpn.run" ]; then
   log "Found local installer at /data/expressvpn.run. Installing..."
-  sh "/data/expressvpn.run" --headless || true
+  sh "/data/expressvpn.run" --accept --quiet || true
   mv "/data/expressvpn.run" "/data/expressvpn.run.installed-$(date +%s)"
   log "Installation complete."
 elif [ -f "/data/expressvpn.deb" ]; then
