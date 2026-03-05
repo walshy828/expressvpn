@@ -56,7 +56,7 @@ if [ -f "/data/expressvpn.run" ]; then
   "/data/expressvpn.run" --accept 
   
   # Only move if successful
-  mv "/data/expressvpn.run" "/data/expressvpn.run.installed-$(date +%s)"
+  #mv "/data/expressvpn.run" "/data/expressvpn.run.installed-$(date +%s)"
   log "Installation complete."
 fi
 
