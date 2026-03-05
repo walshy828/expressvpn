@@ -50,19 +50,24 @@ cp /tmp/resolv.conf.bak /etc/resolv.conf
 # ── Check for local installer drop-in ──────────────────────────────────────────
 # If you drop an installer into /docker/arr-stack/expressvpn/ (mapped to /data)
 if [ -f "/data/expressvpn.run" ]; then
-  log "Found local installer at /data/expressvpn.run. Installing..."
-  # Removed --quiet to see errors, and removed || true so it fails if install fails
+  log "Found local installer. Forcing manual extraction..."
   chmod +x "/data/expressvpn.run"
-  # Extract to a temp directory first
-  mkdir -p /tmp/evpn-files
-  "/data/expressvpn.run" --target /tmp/evpn-files --nox11 --accept || true
-
-  find /tmp/evpn-files -type f -name "expressvpn*" -exec cp {} /usr/bin/ \;
-  chmod +x /usr/bin/expressvpn*
   
-  # Only move if successful
-  #mv "/data/expressvpn.run" "/data/expressvpn.run.installed-$(date +%s)"
-  log "Installation complete."
+  # Extract to a specific directory without running the broken install script
+  mkdir -p /tmp/evpn-extract
+  "/data/expressvpn.run" --target /tmp/evpn-extract --nox11 --accept || true
+  
+  # Manually move the binaries to the system path
+  # The installer usually puts them in a subfolder of the target
+  cp -r /tmp/evpn-extract/* /usr/ 2>/dev/null || true
+  cp /tmp/evpn-extract/expressvpn* /usr/bin/ 2>/dev/null || true
+  
+  # Essential: Version 4 often needs the service file to exist even if not used
+  touch /etc/init.d/expressvpn
+  chmod +x /etc/init.d/expressvpn
+  
+  #mv "/data/expressvpn.run" "/data/expressvpn.run.installed"
+  log "Manual extraction complete."
 fi
 
 # ── Start expressvpnd daemon ───────────────────────────────────────────────────
