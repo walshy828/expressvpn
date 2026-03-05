@@ -19,11 +19,11 @@ FROM debian:bookworm-slim AS downloader
 
 ARG TARGETARCH
 
-RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates && \
-    # Map Docker arch to ExpressVPN's expected string
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     if [ "$TARGETARCH" = "arm64" ]; then ARCH="arm64"; else ARCH="amd64"; fi && \
-    # Use the 'latest' redirect link to avoid 404/Exit Code 8
-    wget -q --show-progress "https://www.expressvpn.com/clients/linux/expressvpn_latest_${ARCH}.run" -O /tmp/expressvpn.run && \
+    curl -L -A "Mozilla/5.0" \
+    "https://www.expressvpn.com/clients/linux/expressvpn_latest_${ARCH}.run" \
+    -o /tmp/expressvpn.run && \
     chmod +x /tmp/expressvpn.run
 # ── Stage 2: Final runtime image ───────────────────────────────────────────────
 
