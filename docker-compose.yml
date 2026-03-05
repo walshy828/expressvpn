@@ -23,9 +23,10 @@ services:
       context: .
       args:
         # ⚠️ v3.x certificates expire March 31, 2026. v4+ is REQUIRED.
-        APP_VERSION: "4.0.1" # Update when new v4.x releases are available
+        APP_VERSION: "4.0.1" # ⚠️ Update when new v4.x releases drop
     image: expressvpn-gateway:latest
     container_name: expressvpn
+    privileged: true
     hostname: expressvpn
     cap_add:
       - NET_ADMIN
@@ -56,178 +57,29 @@ services:
     environment:
       - ACTIVATION_CODE=${ACTIVATION_CODE}
       - SERVER=${SERVER:-smart}
-      - PREFERRED_PROTOCOL=${PREFERRED_PROTOCOL:-lightway_udp}
+      - PREFERRED_PROTOCOL=${PREFERRED_PROTOCOL:-lightwayudp}
       - LIGHTWAY_CIPHER=${LIGHTWAY_CIPHER:-auto}
       - FIREWALL_OUTBOUND_SUBNETS=${FIREWALL_OUTBOUND_SUBNETS:-192.168.90.0/24}
       - RECONNECT_DELAY=${RECONNECT_DELAY:-30}
       - HEALTH_PORT=8999
       - TZ=${TZ:-America/New_York}
+      # Qt headless — prevents v4 client binary from aborting with no display
+      - QT_QPA_PLATFORM=offscreen
+      - LANG=C.UTF-8
     volumes:
-      - /docker/app-stack/expressvpn/expressvpn.run:/data/expressvpn.run:ro
-      - /docker/arr-stack/expressvpn:/data # Persists activation state
+      - ./releases/expressvpn.run:/data/expressvpn.run:ro
+      - expressvpn_data:/data # Persists activation state
     healthcheck:
       test: [ "CMD", "/usr/local/bin/healthcheck.sh" ]
       interval: 30s
       timeout: 10s
-      start_period: 60s
+      start_period: 120s # Allow ~60s extraction + ~30s daemon startup + ~30s buffer
       retries: 3
     restart: unless-stopped
-
   # ── qBittorrent ─────────────────────────────────────────────────────────────
   # Port forwarding: ExpressVPN does NOT support it.
   # Maximise throughput with high peer limits + DHT + PEX instead.
   # See README.md → qBittorrent Performance Tuning
-  qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:latest
-    container_name: qbittorrent
-    network_mode: service:expressvpn # Routes all traffic through VPN
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=${TZ:-America/New_York}
-      - WEBUI_PORT=8085
-    volumes:
-      - /docker/arr-stack/qbittorrent:/config
-      - /mnt/torrent:/mnt/torrent
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-    restart: unless-stopped
 
-  # ── Jackett ──────────────────────────────────────────────────────────────────
-  jackett:
-    image: lscr.io/linuxserver/jackett:latest
-    container_name: jackett
-    network_mode: service:expressvpn
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=${TZ:-America/New_York}
-      - AUTO_UPDATE=true
-    volumes:
-      - /docker/arr-stack/jackett/data:/config
-      - /docker/arr-stack/jackett/blackhole:/downloads
-    restart: unless-stopped
-
-  # ── Sonarr ───────────────────────────────────────────────────────────────────
-  sonarr:
-    image: lscr.io/linuxserver/sonarr:latest
-    container_name: sonarr
-    network_mode: service:expressvpn
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=${TZ:-America/New_York}
-    volumes:
-      - /docker/arr-stack/sonarr/data:/config
-      - /mnt/torrent:/mnt/torrent
-      - /mnt/nas2:/mnt/nas2
-      - /mnt/media:/media
-    restart: unless-stopped
-
-  # ── Prowlarr ─────────────────────────────────────────────────────────────────
-  prowlarr:
-    image: lscr.io/linuxserver/prowlarr:latest
-    container_name: prowlarr
-    network_mode: service:expressvpn
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=${TZ:-America/New_York}
-    volumes:
-      - /docker/arr-stack/prowlarr/data:/config
-      - /mnt/torrent:/mnt/torrent
-    restart: unless-stopped
-
-  # ── FlareSolverr ─────────────────────────────────────────────────────────────
-  flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: flaresolverr
-    network_mode: service:expressvpn
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    environment:
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - LOG_HTML=false
-      - CAPTCHA_SOLVER=none
-      - TZ=${TZ:-America/New_York}
-    restart: unless-stopped
-
-  # ── Radarr ───────────────────────────────────────────────────────────────────
-  radarr:
-    image: lscr.io/linuxserver/radarr:latest
-    container_name: radarr
-    network_mode: service:expressvpn
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=${TZ:-America/New_York}
-    volumes:
-      - /docker/radarr/data:/config
-      - /mnt/nas1:/mnt/nas1
-      - /mnt/torrent:/mnt/torrent
-      - /mnt/nas2:/mnt/nas2
-      - /mnt/media:/media
-    restart: unless-stopped
-
-  # ── Seerr (Overseerr fork) ───────────────────────────────────────────────────
-  seerr:
-    image: ghcr.io/seerr-team/seerr:latest
-    container_name: seerr
-    network_mode: service:expressvpn
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    init: true
-    environment:
-      - LOG_LEVEL=info
-      - TZ=${TZ:-America/New_York}
-      - PORT=5055
-    volumes:
-      - /docker/overseerr/config:/app/config
-    healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://127.0.0.1:5055/api/v1/status || exit 1
-      start_period: 60s
-      timeout: 3s
-      interval: 15s
-      retries: 3
-    restart: unless-stopped
-
-  # ── Profilarr ────────────────────────────────────────────────────────────────
-  profilarr:
-    image: santiagosayshey/profilarr:latest
-    container_name: profilarr
-    network_mode: service:expressvpn
-    depends_on:
-      expressvpn:
-        condition: service_healthy
-        restart: true
-    volumes:
-      - /docker/profilarr/config:/config
-    restart: unless-stopped
-
-networks: {}
+volumes:
+  expressvpn_data:

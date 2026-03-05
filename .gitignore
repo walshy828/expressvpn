@@ -11,3 +11,5 @@
 .vscode/
 .idea/
 *.swp
+
+releases/

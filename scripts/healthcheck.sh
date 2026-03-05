@@ -1,27 +1,32 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ExpressVPN Gateway — Health Check
+# ExpressVPN Gateway — Health Check  (v4 compatible)
 # =============================================================================
-# Used by Docker HEALTHCHECK directive. Exits 0 = healthy, 1 = unhealthy.
-# Checks both:
-#   1. expressvpn status reports "Connected"
-#   2. The tun0/utun0 interface exists (actual tunnel is up)
+# Uses expressvpnctl (headless CLI) instead of expressvpn-client (Qt GUI).
+# Exits 0 = healthy, 1 = unhealthy.
+# Checks:
+#   1. expressvpnctl reports "Connected" connection state
+#   2. tun0 or utun0 interface exists (actual tunnel is active)
 
 set -euo pipefail
 
-# Check VPN status via expressvpn CLI
-VPN_STATUS=$(expressvpn status 2>/dev/null || echo "error")
+export LD_LIBRARY_PATH="/opt/expressvpn/lib:${LD_LIBRARY_PATH:-}"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
+export LANG="${LANG:-C.UTF-8}"
 
-if ! echo "$VPN_STATUS" | grep -qi "Connected"; then
-  echo "UNHEALTHY: ExpressVPN reports: ${VPN_STATUS}"
+# Check VPN connection state via headless CTL tool
+VPN_STATE=$(expressvpnctl get connectionstate 2>/dev/null || echo "error")
+
+if ! echo "$VPN_STATE" | grep -qi "^Connected$"; then
+  echo "UNHEALTHY: VPN state is '${VPN_STATE}' (expected 'Connected')"
   exit 1
 fi
 
-# Check tunnel interface is present
+# Check tunnel interface is actually present
 if ! (ip link show tun0 &>/dev/null || ip link show utun0 &>/dev/null); then
-  echo "UNHEALTHY: VPN status is Connected but no tunnel interface found"
+  echo "UNHEALTHY: State is Connected but no tun0/utun0 interface found"
   exit 1
 fi
 
-echo "HEALTHY: ${VPN_STATUS}"
+echo "HEALTHY: Connected via $(ip link show tun0 &>/dev/null && echo tun0 || echo utun0)"
 exit 0

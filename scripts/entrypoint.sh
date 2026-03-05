@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ExpressVPN Docker Gateway — Entrypoint
+# ExpressVPN Docker Gateway — Entrypoint  (v4 compatible)
 # =============================================================================
-# 1. Validates required env vars
-# 2. Starts expressvpnd daemon
-# 3. Activates + configures ExpressVPN (Lightway protocol)
-# 4. Connects to VPN server
-# 5. Waits for tun0 interface
-# 6. Configures iptables NAT (so attached containers route through VPN)
-# 7. Configures kill-switch (blocks all non-VPN forwarded traffic)
-# 8. Starts HTTP health endpoint
-# 9. Runs watchdog loop (auto-reconnect on disconnect)
+# Flow:
+#   1.  Validate required env vars
+#   2.  Install ExpressVPN v4 from mounted .run file (idempotent)
+#   3.  Start expressvpnd daemon
+#   4.  Wait for daemon IPC socket (daemon.sock)
+#   5.  Enable background mode (allows headless CLI control)
+#   6.  Activate via expressvpnctl login
+#   7.  Configure protocol / cipher
+#   8.  Connect
+#   9.  Wait for tun interface
+#   10. Configure iptables NAT + kill-switch
+#   11. Run HTTP health endpoint + watchdog
 # =============================================================================
 
 set -euo pipefail
@@ -28,207 +31,362 @@ if [ -z "${ACTIVATION_CODE:-}" ]; then
 fi
 
 : "${SERVER:=smart}"
-: "${PREFERRED_PROTOCOL:=lightway_udp}"
+: "${PREFERRED_PROTOCOL:=lightwayudp}"
 : "${LIGHTWAY_CIPHER:=auto}"
 : "${FIREWALL_OUTBOUND_SUBNETS:=192.168.90.0/24}"
 : "${RECONNECT_DELAY:=30}"
 : "${HEALTH_PORT:=8999}"
+: "${TZ:=America/New_York}"
 
-log "Starting ExpressVPN Gateway"
-log "  Version:   ${EXPRESSVPN_VERSION:-v4}"
+# ── Timezone setup ────────────────────────────────────────────────────────────
+# Ensure /etc/localtime matches $TZ for system-wide consistency
+if [ -f "/usr/share/zoneinfo/${TZ}" ]; then
+  ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime && echo "${TZ}" > /etc/timezone
+  log "System timezone set to: ${TZ}"
+fi
+
+# Set library path early — required before ANY expressvpn binary is exec'd
+export LD_LIBRARY_PATH="/opt/expressvpn/lib:${LD_LIBRARY_PATH:-}"
+# Qt headless: prevents expressvpn-client from aborting when no display is present
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
+export LANG="${LANG:-C.UTF-8}"
+export TZ="${TZ}"
+
+log "Starting ExpressVPN Gateway v${EXPRESSVPN_VERSION:-4}"
 log "  Server:    ${SERVER}"
 log "  Protocol:  ${PREFERRED_PROTOCOL}"
 log "  Cipher:    ${LIGHTWAY_CIPHER}"
 log "  LAN Nets:  ${FIREWALL_OUTBOUND_SUBNETS}"
 
-# ── Fix resolv.conf (Docker bind-mount issue with expressvpnd) ─────────────────
+# ── Fix resolv.conf (Docker bind-mount lock prevents daemon from managing DNS) ─
 cp /etc/resolv.conf /tmp/resolv.conf.bak
-# expressvpnd requires write access to manage DNS — unmount the bind file
 umount /etc/resolv.conf 2>/dev/null || true
 cp /tmp/resolv.conf.bak /etc/resolv.conf
 
-# ── Check for local installer drop-in ──────────────────────────────────────────
-# If you drop an installer into /docker/arr-stack/expressvpn/ (mapped to /data)
-if [ -f "/data/expressvpn.run" ]; then
-  log "Found local installer. Forcing manual extraction..."
-  chmod +x "/data/expressvpn.run"
-  
-  # 1. Clear and create extract dir
+# ── Install ExpressVPN v4 (idempotent) ─────────────────────────────────────────
+# Skip if binaries are already in place (handles crash-loop restarts without
+# re-extracting the ~190MB installer on every attempt).
+EVPND_BIN="/usr/bin/expressvpnd"
+EVPNCTL_BIN="/usr/bin/expressvpnctl"
+
+if [ -f "${EVPND_BIN}" ] && [ -f "${EVPNCTL_BIN}" ]; then
+  log "ExpressVPN binaries already installed — skipping extraction."
+elif [ -f "/data/expressvpn.run" ]; then
+  log "Found installer at /data/expressvpn.run. Beginning extraction..."
+
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    aarch64) EVPN_ARCH="arm64" ;;
+    x86_64)  EVPN_ARCH="x64"   ;;
+    *)       err "Unsupported architecture: $ARCH"; exit 1 ;;
+  esac
+  log "Architecture: $ARCH → installer path: $EVPN_ARCH"
+
+  # Extract synchronously — wait for full completion before proceeding.
+  # Use --noexec to ONLY extract files (skip the embedded installer script
+  # which calls systemd/apt/dpkg and exits 1 in a headless Docker container).
   rm -rf /tmp/evpn-extract && mkdir -p /tmp/evpn-extract
-  
-  # 2. Extract files
-  "/data/expressvpn.run" --target /tmp/evpn-extract --nox11 --accept || true
-  
-  # 3. Use 'find' to locate the binaries and move them to /usr/bin
-  # The installer often puts them in /tmp/evpn-extract/usr/bin/
-  log "Moving binaries to /usr/bin..."
-  find /tmp/evpn-extract -name "expressvpn" -exec cp {} /usr/bin/ \;
-  find /tmp/evpn-extract -name "expressvpnd" -exec cp {} /usr/bin/ \;
-  
-  # 4. Move libraries (CRITICAL for v4)
-  log "Moving libraries to /usr/lib..."
-  find /tmp/evpn-extract -name "*.so*" -exec cp {} /usr/lib/ \;
-  
-  chmod +x /usr/bin/expressvpn*
-  
-  #mv "/data/expressvpn.run" "/data/expressvpn.run.installed"
-  log "Manual extraction complete."
-fi
+  log "Extracting installer (may take 30–60s)..."
+  bash "/data/expressvpn.run" --target /tmp/evpn-extract --nox11 --noexec
+  log "Extraction complete."
 
-# ── Start expressvpnd daemon ───────────────────────────────────────────────────
-log "Starting expressvpn daemon..."
-# v4 changed service name from 'expressvpn' to 'expressvpn-daemon' on some builds.
-# Try both names; fall back to direct binary invocation.
-sed -i 's/DAEMON_ARGS=.*/DAEMON_ARGS=""/' /etc/init.d/expressvpn 2>/dev/null || true
-sed -i 's/DAEMON_ARGS=.*/DAEMON_ARGS=""/' /etc/init.d/expressvpn-daemon 2>/dev/null || true
+  EXTRACT_ROOT="/tmp/evpn-extract/$EVPN_ARCH/expressvpnfiles"
 
-if service expressvpn-daemon restart 2>/dev/null; then
-  DAEMON_SVC="expressvpn-daemon"
-elif service expressvpn restart 2>/dev/null; then
-  DAEMON_SVC="expressvpn"
-elif [ -x /usr/bin/expressvpnd ]; then
-  # Direct binary fallback for minimal installs
-  /usr/bin/expressvpnd &
-  DAEMON_SVC="direct"
+  # Required unix groups for v4
+  groupadd -f expressvpn     || true
+  groupadd -f expressvpnhnsd || true
+
+  # Copy all files synchronously before doing anything else
+  log "Installing to /opt/expressvpn..."
+  mkdir -p /opt/expressvpn
+  cp -a "$EXTRACT_ROOT/." /opt/expressvpn/
+
+  # Runtime directories the daemon writes to
+  mkdir -p /opt/expressvpn/var/lib \
+           /opt/expressvpn/var/run \
+           /var/lib/expressvpn
+  chown -R root:expressvpn /opt/expressvpn
+  chmod -R 775 /opt/expressvpn/var
+
+  # Routing tables required by Lightway / WireGuard
+  for table in expressvpnrt expressvpnOnlyrt expressvpnWgrt expressvpnFwdrt; do
+    if ! grep -q "$table" /etc/iproute2/rt_tables; then
+      EX_COUNT=$(grep -c "expressvpn" /etc/iproute2/rt_tables || true)
+      ID=$((100 + EX_COUNT))
+      echo "$ID $table" >> /etc/iproute2/rt_tables
+    fi
+  done
+
+  # Symlink v4 binaries to /usr/bin (conventional paths)
+  log "Creating binary symlinks..."
+  [ -f /opt/expressvpn/bin/expressvpn-client  ] && ln -sf /opt/expressvpn/bin/expressvpn-client  /usr/bin/expressvpn
+  [ -f /opt/expressvpn/bin/expressvpn-daemon  ] && ln -sf /opt/expressvpn/bin/expressvpn-daemon  /usr/bin/expressvpnd
+  [ -f /opt/expressvpn/bin/expressvpnctl      ] && ln -sf /opt/expressvpn/bin/expressvpnctl      /usr/bin/expressvpnctl
+
+  # Register shared libs NOW — after all files are in place
+  log "Registering shared libraries..."
+  {
+    echo "/opt/expressvpn/lib"
+    echo "/usr/lib/expressvpn"
+  } > /etc/ld.so.conf.d/expressvpn.conf
+  ldconfig
+  log "ldconfig cache updated."
+
+  # Validate binary + library resolution
+  for binary in "$EVPND_BIN" "$EVPNCTL_BIN"; do
+    if [ ! -f "$binary" ]; then
+      err "Missing binary after install: $binary"
+      ls "$EXTRACT_ROOT/bin/" 2>/dev/null || true
+      exit 1
+    fi
+    MISSING=$(LD_LIBRARY_PATH="/opt/expressvpn/lib:${LD_LIBRARY_PATH:-}" ldd "$binary" 2>&1 | grep "not found" || true)
+    if [ -n "$MISSING" ]; then
+      err "$binary has unresolved shared libraries — add them to the Dockerfile:"
+      echo "$MISSING" >&2
+      exit 1
+    fi
+  done
+  log "Installation validated."
+
 else
-  err "Cannot start expressvpn daemon — is the package installed correctly?"
+  err "No installer found at /data/expressvpn.run and no binaries in place."
+  err "Mount the installer: volumes: - ./releases/expressvpn.run:/data/expressvpn.run:ro"
   exit 1
 fi
-log "Daemon started via: ${DAEMON_SVC}"
 
-# Wait for daemon to be ready
-for i in $(seq 1 30); do
-  if expressvpn status &>/dev/null; then
-    log "expressvpnd is ready"
+# ── Start dbus (required by expressvpnd for IPC) ───────────────────────────────
+mkdir -p /var/run/dbus
+rm -f /var/run/dbus/pid
+dbus-daemon --system --fork 2>/dev/null || true
+
+# ── Start expressvpnd daemon ───────────────────────────────────────────────────
+log "Starting expressvpnd daemon..."
+
+if command -v expressvpnd >/dev/null 2>&1; then
+  expressvpnd &
+  DAEMON_PID=$!
+  log "Daemon started (PID ${DAEMON_PID})"
+elif [ -x /opt/expressvpn/bin/expressvpn-daemon ]; then
+  /opt/expressvpn/bin/expressvpn-daemon &
+  DAEMON_PID=$!
+  log "Daemon started via full path (PID ${DAEMON_PID})"
+else
+  err "Cannot find expressvpnd binary. Installation may have failed."
+  exit 1
+fi
+
+# Brief pause to let the daemon process initialise before socket polling
+sleep 2
+
+# ── Wait for daemon IPC socket ─────────────────────────────────────────────────
+# v4 daemon creates 'daemon.sock' in /opt/expressvpn/var/ (NOT a fixed path
+# under /run). Poll for it specifically.
+DAEMON_SOCK="/opt/expressvpn/var/daemon.sock"
+log "Waiting for daemon socket at ${DAEMON_SOCK}..."
+for i in $(seq 1 60); do
+  if [ -S "$DAEMON_SOCK" ]; then
+    log "Daemon socket ready (attempt ${i})"
     break
   fi
-  [ "$i" -eq 30 ] && { err "expressvpnd failed to start"; exit 1; }
+  [ "$i" -eq 60 ] && { err "Timeout: daemon socket never appeared. Check expressvpnd logs."; exit 1; }
   sleep 1
 done
 
-# ── Activate ExpressVPN ────────────────────────────────────────────────────────
-log "Activating ExpressVPN..."
-expect /usr/local/bin/activate.exp
+# Extra grace period — the socket appears before the IPC handler is fully wired up
+log "Waiting for daemon IPC to become ready..."
+sleep 15
 
-# ── Configure Lightway Protocol ───────────────────────────────────────────────
-log "Configuring protocol: ${PREFERRED_PROTOCOL} / cipher: ${LIGHTWAY_CIPHER}"
-expressvpn preferences set preferred_protocol "${PREFERRED_PROTOCOL}"
-expressvpn preferences set lightway_cipher "${LIGHTWAY_CIPHER}"
-expressvpn preferences set auto_connect true
-# Send anonymous analytics (off for privacy)
-expressvpn preferences set send_diagnostics false 2>/dev/null || true
+# ── Enable background mode (CRITICAL for headless CLI operation) ───────────────
+# Without this, expressvpnctl commands time out because the daemon treats itself
+# as an accessory to the GUI client and suspends activity when no GUI connects.
+log "Enabling background mode (headless CLI control)..."
+BG_ENABLED=false
+for i in $(seq 1 15); do
+  if expressvpnctl background enable 2>/dev/null; then
+    log "Background mode enabled (attempt ${i})"
+    BG_ENABLED=true
+    break
+  fi
+  warn "Waiting for daemon IPC (attempt ${i}/15)..."
+  sleep 3
+done
+if [ "$BG_ENABLED" = "false" ]; then
+  err "Failed to enable background mode after 15 attempts (~45s)."
+  exit 1
+fi
+
+# ── Activate / Login ───────────────────────────────────────────────────────────
+log "Activating ExpressVPN..."
+# Check if already logged in — avoids burning activation requests on restart
+EVPN_STATUS=$(expressvpnctl status 2>/dev/null || echo "unknown")
+if echo "$EVPN_STATUS" | grep -qi "Not logged in\|not activated\|unknown"; then
+  log "Not logged in — running activation..."
+  ACTIVATE_FILE=$(mktemp)
+  echo "${ACTIVATION_CODE}" > "$ACTIVATE_FILE"
+  if ! expressvpnctl login "$ACTIVATE_FILE"; then
+    err "Activation failed. Verify your ACTIVATION_CODE at https://www.expressvpn.com/setup#manual"
+    rm -f "$ACTIVATE_FILE"
+    exit 1
+  fi
+  rm -f "$ACTIVATE_FILE"
+  log "Activation successful."
+else
+  log "Already activated. Skipping login. (status: $(echo "$EVPN_STATUS" | head -1))"
+fi
+
+# ── Configure Protocol / Cipher / Preferences ─────────────────────────────────
+# v4 protocol names: lightwayudp | lightwaytcp | openvpnudp | openvpntcp | auto
+log "Setting protocol: ${PREFERRED_PROTOCOL}"
+expressvpnctl set protocol "${PREFERRED_PROTOCOL}" 2>/dev/null || \
+  warn "Could not set protocol — check name (lightwayudp|lightwaytcp|auto)"
+
+# Disable network lock (kill switch) managed here by iptables instead
+expressvpnctl set networklock false 2>/dev/null || true
 
 # ── Connect ────────────────────────────────────────────────────────────────────
 connect_vpn() {
   log "Connecting to: ${SERVER}"
-  expressvpn connect "${SERVER}" && return 0
+  expressvpnctl connect "${SERVER}" && return 0
   err "Connection failed — retrying in ${RECONNECT_DELAY}s..."
   return 1
 }
-
 connect_vpn || true
 
-# ── Wait for tun0 interface ────────────────────────────────────────────────────
+# ── Wait for tun interface ─────────────────────────────────────────────────────
 log "Waiting for VPN tunnel interface..."
 TUN_IFACE=""
-for i in $(seq 1 60); do
-  # ExpressVPN Lightway uses 'utun0' on some systems, 'tun0' on Linux
+for i in $(seq 1 90); do
   for iface in tun0 utun0; do
     if ip link show "$iface" &>/dev/null 2>&1; then
       TUN_IFACE="$iface"
       break 2
     fi
   done
-  [ "$i" -eq 60 ] && { err "Timeout waiting for VPN interface. Check activation code and server."; exit 1; }
+  [ "$i" -eq 90 ] && { err "Timeout waiting for VPN interface. Check activation code and server."; exit 1; }
   sleep 1
 done
-log "VPN tunnel up on ${TUN_IFACE}"
+log "VPN tunnel up on: ${TUN_IFACE}"
+ 
+log "Forcing default routing through ${TUN_IFACE}..."
+# Use /2 routes to bypass ExpressVPN's suppress_prefixlength 1 rule
+# (which ignores routes with prefix length 0 or 1 in the main table).
+ip route add 0.0.0.0/2 dev "${TUN_IFACE}" || true
+ip route add 64.0.0.0/2 dev "${TUN_IFACE}" || true
+ip route add 128.0.0.0/2 dev "${TUN_IFACE}" || true
+ip route add 192.0.0.0/2 dev "${TUN_IFACE}" || true
+log "Routing override applied (/2 routes)."
 
-# ── iptables: NAT / IP Masquerade ─────────────────────────────────────────────
-# Attached containers use network_mode: service:expressvpn.
-# They share this network namespace — their traffic exits via tun0 after MASQUERADE.
-log "Configuring iptables NAT on ${TUN_IFACE}..."
+# ── iptables: NAT + Kill-switch ────────────────────────────────────────────────
+log "Configuring iptables NAT + kill-switch on ${TUN_IFACE}..."
 
-# Enable IP forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward
-echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || true  # Prevent IPv6 leaks
+# Belt-and-suspenders IPv6 disable — prefer kernel sysctl but also set via ip6tables
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6  2>/dev/null || true
+echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null || true
 
-# Flush existing rules (clean slate)
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
+# ── Flush ALL existing rules (clean slate every boot) ──────────────────────────
+iptables  -F; iptables  -X; iptables  -Z
+iptables  -t nat    -F; iptables  -t nat    -X
+iptables  -t mangle -F; iptables  -t mangle -X
 
-# ── Kill-switch: default FORWARD DROP ─────────────────────────────────────────
-# Any traffic that cannot route through the VPN tunnel is silently dropped.
-iptables -P INPUT   ACCEPT   # Container can receive replies
-iptables -P OUTPUT  ACCEPT   # Container can initiate — expressvpnd handles this
-iptables -P FORWARD DROP     # Kill-switch: block forwarded traffic by default
+# ── IPv6: Block everything — we are IPv4/VPN only ──────────────────────────────
+# Even with disable_ipv6=1 at kernel level, add ip6tables rules as a hard backstop
+# to prevent any IPv6 traffic escaping the container unencrypted.
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -F; ip6tables -X 2>/dev/null || true
+  ip6tables -P INPUT   DROP
+  ip6tables -P OUTPUT  DROP
+  ip6tables -P FORWARD DROP
+  # Allow loopback IPv6 (needed by some internal services)
+  ip6tables -A INPUT  -i lo -j ACCEPT
+  ip6tables -A OUTPUT -o lo -j ACCEPT
+  log "ip6tables: all IPv6 forwarding blocked (full DROP policy)"
+else
+  warn "ip6tables not found — relying on kernel disable_ipv6 sysctl only"
+fi
 
-# Allow loopback
+# ── IPv4 Kill-switch: default FORWARD DROP ─────────────────────────────────────
+# Any packet that cannot route through the VPN tunnel is silently dropped.
+# This is the "kill switch" — containers sharing this network namespace
+# lose internet access the moment the tunnel goes down.
+iptables -P INPUT   ACCEPT   # Container can receive replies on any interface
+iptables -P OUTPUT  ACCEPT   # Container can originate — expressvpnd handles routing
+iptables -P FORWARD DROP     # ← Kill-switch: nothing forwards by default
+
+# Loopback is always allowed
 iptables -A INPUT  -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 
-# Allow established/related on all interfaces (return traffic)
+# Allow return traffic for already-established connections (stateful)
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# Allow forwarded traffic only through the VPN tunnel
+# ── VPN tunnel forward rules ── ONLY tun0 traffic is permitted ─────────────────
+# Outbound: allow forwarded packets going OUT through the VPN tunnel
 iptables -A FORWARD -o "${TUN_IFACE}" -j ACCEPT
+# Inbound: allow forwarded packets coming IN from the VPN tunnel
 iptables -A FORWARD -i "${TUN_IFACE}" -j ACCEPT
 
-# NAT: masquerade outbound traffic through the VPN tunnel
+# ── NAT: MASQUERADE scoped to tun0 only ───────────────────────────────────────
+# If tun0 goes down, this rule vanishes too — no traffic would be masqueraded
+# through a fallback interface (the FORWARD DROP above blocks it anyway).
 iptables -t nat -A POSTROUTING -o "${TUN_IFACE}" -j MASQUERADE
 
-# Allow LAN subnets to bypass kill-switch (for Sonarr→NAS access etc.)
+# ── OUTPUT kill-switch: block cleartext egress on the physical interface ────────
+# Containers using `network_mode: service:expressvpn` share this network namespace.
+# Their traffic appears in the OUTPUT chain (not FORWARD) from the kernel's view.
+# Without these rules, if tun0 drops, traffic leaks through eth0 (the host route).
+#
+# Strategy: ACCEPT on tun0, ACCEPT established return traffic on eth0,
+#           DROP all new outbound on eth0/physical interfaces.
+#
+# Find the physical (non-VPN, non-loopback, non-virtual) interface
+# Match eth*, ens*, enp*, wlan* — the real container/host NIC assigned by Docker
+ETH_IFACE=$(ip -o link show | awk -F': ' '$2 ~ /^(eth|ens|enp|wlan)/ {print $2; exit}' | cut -d'@' -f1)
+log "Physical interface for OUTPUT kill-switch: ${ETH_IFACE}"
+
+# Allow all traffic on the VPN tunnel (outbound to VPN)
+iptables -A OUTPUT -o "${TUN_IFACE}" -j ACCEPT
+# Allow loopback
+iptables -A OUTPUT -o lo -j ACCEPT
+# Allow established/related return packets on eth0 (e.g. DHCP, ARP, DNS replies)
+iptables -A OUTPUT -o "${ETH_IFACE}" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# Allow the VPN daemon itself to reach VPN servers over eth0 (lightway handshake, ICMP)
+# Without this the daemon can't establish the tunnel on first boot
+iptables -A OUTPUT -o "${ETH_IFACE}" -m owner --uid-owner 0 -p udp -j ACCEPT
+iptables -A OUTPUT -o "${ETH_IFACE}" -m owner --uid-owner 0 -p tcp -j ACCEPT
+# Block all other new outbound on physical interface — kills cleartext leak
+iptables -A OUTPUT -o "${ETH_IFACE}" -j DROP
+
+log "OUTPUT kill-switch: new cleartext egress on ${ETH_IFACE} is blocked for non-root."
+
+# ── LAN bypass exceptions (e.g. Sonarr → NAS, or host admin access) ──────────
 IFS=',' read -ra SUBNETS <<< "${FIREWALL_OUTBOUND_SUBNETS}"
 for SUBNET in "${SUBNETS[@]}"; do
-  SUBNET="${SUBNET// /}"  # trim spaces
+  SUBNET="${SUBNET// /}"
   [ -z "$SUBNET" ] && continue
-  log "  Allowing LAN subnet: ${SUBNET}"
+  log "  Allowing LAN bypass: ${SUBNET}"
   iptables -A FORWARD -d "${SUBNET}" -j ACCEPT
   iptables -A FORWARD -s "${SUBNET}" -j ACCEPT
 done
 
-log "iptables NAT + kill-switch configured"
+log "iptables NAT + kill-switch configured."
+log "  IPv4 FORWARD default policy: $(iptables -L FORWARD | head -1 | grep -o 'policy [A-Z]*')"
+log "  NAT MASQUERADE interface:    ${TUN_IFACE}"
+log "  IPv6 FORWARD default policy: $(ip6tables -L FORWARD 2>/dev/null | head -1 | grep -o 'policy [A-Z]*' || echo 'kernel sysctl disabled')"
 
 # ── Health HTTP Endpoint ───────────────────────────────────────────────────────
-# Simple HTTP server on HEALTH_PORT — returns 200 "connected" or 503 "disconnected"
-# Used by Docker HEALTHCHECK and by docker-compose depends_on health condition.
 log "Starting health endpoint on :${HEALTH_PORT}..."
-
-health_server() {
-  while true; do
-    STATUS=$(expressvpn status 2>/dev/null || echo "error")
-    if echo "$STATUS" | grep -qi "Connected"; then
-      HTTP_STATUS="200 OK"
-      BODY="connected"
-    else
-      HTTP_STATUS="503 Service Unavailable"
-      BODY="disconnected"
-    fi
-    # socat: accept one connection, respond, loop
-    echo -e "HTTP/1.1 ${HTTP_STATUS}\r\nContent-Type: text/plain\r\nContent-Length: ${#BODY}\r\nConnection: close\r\n\r\n${BODY}" \
-      | socat TCP-LISTEN:${HEALTH_PORT},reuseaddr,fork STDIN 2>/dev/null &
-    sleep 5
-    kill %1 2>/dev/null || true
-  done
-}
-
-# Better socat-based health server (handles concurrent requests properly)
 socat_health() {
   while true; do
-    STATUS=$(expressvpn status 2>/dev/null || echo "error")
-    if echo "$STATUS" | grep -qi "Connected"; then
+    STATE=$(expressvpnctl get connectionstate 2>/dev/null || echo "error")
+    if echo "$STATE" | grep -qi "^Connected$"; then
       RESP="HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nconnected"
     else
-      RESP="HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\ndisconnected"
+      RESP="HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\n${STATE}"
     fi
     echo -e "$RESP" | timeout 2 socat -u - TCP-LISTEN:${HEALTH_PORT},reuseaddr 2>/dev/null || true
   done
 }
-
 socat_health &
 HEALTH_PID=$!
 
@@ -237,15 +395,16 @@ watchdog() {
   log "Watchdog started (interval: ${RECONNECT_DELAY}s)"
   while true; do
     sleep "${RECONNECT_DELAY}"
-    STATUS=$(expressvpn status 2>/dev/null || echo "error")
-    if ! echo "$STATUS" | grep -qi "Connected"; then
-      warn "VPN disconnected — reconnecting to ${SERVER}..."
-      expressvpn connect "${SERVER}" 2>/dev/null || true
-      # Re-check tun interface after reconnect (it may change)
+    STATE=$(expressvpnctl get connectionstate 2>/dev/null || echo "error")
+    if ! echo "$STATE" | grep -qi "^Connected$"; then
+      warn "VPN not connected (state: ${STATE}) — reconnecting to ${SERVER}..."
+      expressvpnctl connect "${SERVER}" 2>/dev/null || true
+
+      # Update iptables if the tunnel interface changes after reconnect
       for iface in tun0 utun0; do
         if ip link show "$iface" &>/dev/null 2>&1; then
           if [ "$iface" != "$TUN_IFACE" ]; then
-            warn "Tunnel interface changed to ${iface}, updating iptables..."
+            warn "Tunnel interface changed: ${TUN_IFACE} → ${iface}. Updating iptables..."
             iptables -t nat -F POSTROUTING
             iptables -t nat -A POSTROUTING -o "${iface}" -j MASQUERADE
             TUN_IFACE="$iface"
@@ -256,22 +415,21 @@ watchdog() {
     fi
   done
 }
-
 watchdog &
 WATCHDOG_PID=$!
 
-log "ExpressVPN Gateway is READY"
+log "ExpressVPN Gateway is READY ✓"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-expressvpn status
+expressvpnctl status 2>/dev/null || true
 
 # ── Graceful shutdown ─────────────────────────────────────────────────────────
 cleanup() {
   log "Shutting down..."
   kill "$WATCHDOG_PID" 2>/dev/null || true
   kill "$HEALTH_PID"   2>/dev/null || true
-  expressvpn disconnect 2>/dev/null || true
+  expressvpnctl disconnect 2>/dev/null || true
 }
 trap cleanup EXIT SIGTERM SIGINT
 
-# Keep container alive — wait on watchdog
+# Keep container alive — block on watchdog
 wait "$WATCHDOG_PID"
