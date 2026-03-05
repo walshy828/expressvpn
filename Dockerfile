@@ -11,12 +11,12 @@
 ARG APP_VERSION=4.0.1
 
 # ── Stage 1: Local installer prep ──────────────────────────────────────────────
-# We now use a locally downloaded installer file instead of fetching from the web
-# Place the downloaded .run file from ExpressVPN into the `releases/` directory
-# and name it `expressvpn.run`.
+# By default we look for `releases/expressvpn.run`
+# You can override this with the EXPRESSVPN_INSTALLER env var in your .env file
 FROM debian:bookworm-slim AS downloader
 
-COPY releases/expressvpn.run /tmp/expressvpn.run
+ARG INSTALLER_FILE=releases/expressvpn.run
+COPY ${INSTALLER_FILE} /tmp/expressvpn.run
 RUN chmod +x /tmp/expressvpn.run
 # ── Stage 2: Final runtime image ───────────────────────────────────────────────
 

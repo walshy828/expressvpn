@@ -24,6 +24,8 @@ services:
       args:
         # ⚠️ v3.x certificates expire March 31, 2026. v4+ is REQUIRED.
         APP_VERSION: "4.0.1" # Update when new v4.x releases are available
+        # Pass the local installer path from .env (defaults to releases/expressvpn.run)
+        INSTALLER_FILE: ${EXPRESSVPN_INSTALLER:-releases/expressvpn.run}
     image: expressvpn-gateway:latest
     container_name: expressvpn
     hostname: expressvpn

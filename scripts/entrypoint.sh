@@ -47,6 +47,20 @@ cp /etc/resolv.conf /tmp/resolv.conf.bak
 umount /etc/resolv.conf 2>/dev/null || true
 cp /tmp/resolv.conf.bak /etc/resolv.conf
 
+# ── Check for local installer drop-in ──────────────────────────────────────────
+# If you drop an installer into /docker/arr-stack/expressvpn/ (mapped to /data)
+if [ -f "/data/expressvpn.run" ]; then
+  log "Found local installer at /data/expressvpn.run. Installing..."
+  sh "/data/expressvpn.run" --headless || true
+  mv "/data/expressvpn.run" "/data/expressvpn.run.installed-$(date +%s)"
+  log "Installation complete."
+elif [ -f "/data/expressvpn.deb" ]; then
+  log "Found local installer at /data/expressvpn.deb. Installing..."
+  dpkg -i "/data/expressvpn.deb" || apt-get install -f -y
+  mv "/data/expressvpn.deb" "/data/expressvpn.deb.installed-$(date +%s)"
+  log "Installation complete."
+fi
+
 # ── Start expressvpnd daemon ───────────────────────────────────────────────────
 log "Starting expressvpn daemon..."
 # v4 changed service name from 'expressvpn' to 'expressvpn-daemon' on some builds.
