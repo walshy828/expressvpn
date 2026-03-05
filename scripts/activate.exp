@@ -1,0 +1,35 @@
+#!/usr/bin/expect
+# =============================================================================
+# ExpressVPN non-interactive activation script
+# Uses the ACTIVATION_CODE environment variable
+# =============================================================================
+
+set timeout 30
+
+spawn expressvpn activate
+
+expect {
+    "Enter activation code:" {
+        send "$env(ACTIVATION_CODE)\r"
+        expect {
+            "information." {
+                # Prompt asking to share diagnostics — always decline
+                send "n\r"
+            }
+            "Invalid activation code" {
+                puts "\nERROR: Invalid activation code. Get yours at https://www.expressvpn.com/setup#manual"
+                exit 1
+            }
+        }
+    }
+    "Already activated" {
+        # Already activated on a previous run — skip
+        send "\r"
+    }
+    timeout {
+        puts "\nERROR: Activation timed out. Check that expressvpnd is running."
+        exit 1
+    }
+}
+
+expect eof

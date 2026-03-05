@@ -1,0 +1,13 @@
+# Activation code — MUST NEVER be committed
+.env
+
+# Docker build cache
+.dockerignore
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
