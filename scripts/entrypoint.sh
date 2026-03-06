@@ -370,6 +370,26 @@ for SUBNET in "${SUBNETS[@]}"; do
 done
 
 log "iptables NAT + kill-switch configured."
+
+# ── Policy Routing: Ensure eth0 responses stay on eth0 ────────────────────────
+# This prevents asymmetric routing (SYN on eth0 -> SYN-ACK on tun0)
+# which happens when the source IP is considered "Internet" by the VPN.
+ETH_GW=$(ip route show default dev "${ETH_IFACE}" | awk '{print $3}' | head -1)
+if [ -n "${ETH_GW}" ]; then
+  log "Setting up policy routing for ${ETH_IFACE} via ${ETH_GW}..."
+  # Mark connections arriving on eth0
+  iptables -t mangle -A PREROUTING -i "${ETH_IFACE}" -j CONNMARK --set-mark 0x8999
+  # Restore mark to outgoing packets
+  iptables -t mangle -A OUTPUT -j CONNMARK --restore-mark
+  # Route marked packets via host gateway instead of tun0
+  ip route add default via "${ETH_GW}" dev "${ETH_IFACE}" table 100 2>/dev/null || true
+  # Add rule to use the table
+  ip rule add fwmark 0x8999 table 100 priority 10
+  log "  Policy routing active (table 100)."
+else
+  warn "Could not detect ${ETH_IFACE} gateway. API access from external IPs might fail."
+fi
+
 log "  IPv4 FORWARD default policy: $(iptables -L FORWARD | head -1 | grep -o 'policy [A-Z]*')"
 log "  NAT MASQUERADE interface:    ${TUN_IFACE}"
 log "  IPv6 FORWARD default policy: $(ip6tables -L FORWARD 2>/dev/null | head -1 | grep -o 'policy [A-Z]*' || echo 'kernel sysctl disabled')"
