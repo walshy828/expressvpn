@@ -381,6 +381,13 @@ iptables -t nat -A OUTPUT -p udp --dport 53 -j DNAT --to-destination 1.1.1.1
 iptables -t nat -A OUTPUT -p tcp --dport 53 -j DNAT --to-destination 1.1.1.1
 log "Transparent DNS proxy: enabled (intercepting port 53 → 1.1.1.1)"
 
+# ── MTU/MSS Clamping (Linux VM Fix) ──────────────────────────────────────────
+# Prevents network hangs/timeouts on Proxmox/Linux VMs by ensuring TCP
+# packets fit within the VPN tunnel MTU (typically 1350).
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+log "TCP MSS clamping: active (clamping to PMTU)"
+
 # ── Policy Routing: Ensure eth0 responses stay on eth0 ────────────────────────
 # This prevents asymmetric routing (SYN on eth0 -> SYN-ACK on tun0)
 # which happens when the source IP is considered "Internet" by the VPN.
