@@ -13,3 +13,6 @@
 *.swp
 
 releases/
+data/
+env/
+logs/

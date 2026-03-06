@@ -374,21 +374,13 @@ log "  IPv4 FORWARD default policy: $(iptables -L FORWARD | head -1 | grep -o 'p
 log "  NAT MASQUERADE interface:    ${TUN_IFACE}"
 log "  IPv6 FORWARD default policy: $(ip6tables -L FORWARD 2>/dev/null | head -1 | grep -o 'policy [A-Z]*' || echo 'kernel sysctl disabled')"
 
-# ── Health HTTP Endpoint ───────────────────────────────────────────────────────
-log "Starting health endpoint on :${HEALTH_PORT}..."
-socat_health() {
-  while true; do
-    STATE=$(expressvpnctl get connectionstate 2>/dev/null || echo "error")
-    if echo "$STATE" | grep -qi "^Connected$"; then
-      RESP="HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nconnected"
-    else
-      RESP="HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\n${STATE}"
-    fi
-    echo -e "$RESP" | timeout 2 socat -u - TCP-LISTEN:${HEALTH_PORT},reuseaddr 2>/dev/null || true
-  done
-}
-socat_health &
-HEALTH_PID=$!
+# ── VPN Control API & Health Endpoint ─────────────────────────────────────────
+# Replaces the simple socat loop with a secure Python API that allows
+# rotating locations and checking status.
+log "Starting VPN Control API on :${HEALTH_PORT}..."
+export API_KEY="${API_KEY:-}"
+python3 /usr/local/bin/vpn_api.py &
+API_PID=$!
 
 # ── Watchdog: Auto-reconnect ───────────────────────────────────────────────────
 watchdog() {
@@ -426,7 +418,7 @@ expressvpnctl status 2>/dev/null || true
 cleanup() {
   log "Shutting down..."
   kill "$WATCHDOG_PID" 2>/dev/null || true
-  kill "$HEALTH_PID"   2>/dev/null || true
+  kill "$API_PID"      2>/dev/null || true
   expressvpnctl disconnect 2>/dev/null || true
 }
 trap cleanup EXIT SIGTERM SIGINT

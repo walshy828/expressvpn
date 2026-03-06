@@ -18,7 +18,7 @@ LABEL org.opencontainers.image.source="https://github.com/expressvpn"
 
 # v4 no longer requires NetworkManager (libnm0) or ReadKey, but still needs DBus
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    expect iproute2 iptables ca-certificates procps curl socat \
+    expect iproute2 iptables ca-certificates procps curl socat python3 \
     psmisc libatomic1 libglib2.0-0 libbrotli1 libdbus-1-3 libasound2 \
     dbus libxkbcommon0 libxkbcommon-x11-0 libgl1 libegl1 libopengl0 \
     libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
@@ -28,10 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY scripts/entrypoint.sh      /usr/local/bin/entrypoint.sh
 COPY scripts/activate.exp       /usr/local/bin/activate.exp
 COPY scripts/healthcheck.sh     /usr/local/bin/healthcheck.sh
+COPY scripts/vpn_api.py        /usr/local/bin/vpn_api.py
 
 RUN chmod +x \
     /usr/local/bin/entrypoint.sh \
-    /usr/local/bin/healthcheck.sh
+    /usr/local/bin/healthcheck.sh \
+    /usr/local/bin/vpn_api.py
 
 # ── Environment defaults (override via .env or docker-compose) ─────────────────
 # ACTIVATION_CODE  : Required — from https://www.expressvpn.com/setup#manual

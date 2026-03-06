@@ -26,6 +26,7 @@ services:
         APP_VERSION: "4.0.1" # ⚠️ Update when new v4.x releases drop
     image: expressvpn-gateway:latest
     container_name: expressvpn
+    env_file: .env
     privileged: true
     hostname: expressvpn
     cap_add:
@@ -62,6 +63,7 @@ services:
       - FIREWALL_OUTBOUND_SUBNETS=${FIREWALL_OUTBOUND_SUBNETS:-192.168.90.0/24}
       - RECONNECT_DELAY=${RECONNECT_DELAY:-30}
       - HEALTH_PORT=8999
+      - API_KEY=${API_KEY}
       - TZ=${TZ:-America/New_York}
       # Qt headless — prevents v4 client binary from aborting with no display
       - QT_QPA_PLATFORM=offscreen
