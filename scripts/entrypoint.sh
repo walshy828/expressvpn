@@ -371,6 +371,16 @@ done
 
 log "iptables NAT + kill-switch configured."
 
+# ── Transparent DNS Proxy ──────────────────────────────────────────────────
+# Intercept all outgoing DNS queries (port 53) from sibling containers
+# and redirect them to Cloudflare (1.1.1.1). This ensures DNS works
+# even if siblings are stuck with Docker's internal 127.0.0.11 relay.
+iptables -t nat -A PREROUTING -p udp --dport 53 -j DNAT --to-destination 1.1.1.1
+iptables -t nat -A PREROUTING -p tcp --dport 53 -j DNAT --to-destination 1.1.1.1
+iptables -t nat -A OUTPUT -p udp --dport 53 -j DNAT --to-destination 1.1.1.1
+iptables -t nat -A OUTPUT -p tcp --dport 53 -j DNAT --to-destination 1.1.1.1
+log "Transparent DNS proxy: enabled (intercepting port 53 → 1.1.1.1)"
+
 # ── Policy Routing: Ensure eth0 responses stay on eth0 ────────────────────────
 # This prevents asymmetric routing (SYN on eth0 -> SYN-ACK on tun0)
 # which happens when the source IP is considered "Internet" by the VPN.

@@ -99,7 +99,6 @@ services:
     volumes:
       - ./config/qbittorrent:/config
       - ./downloads:/downloads
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
     deploy:
       resources:
         limits:
@@ -123,7 +122,6 @@ services:
     volumes:
       - ./config/jackett:/config
       - ./downloads/blackhole:/downloads
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
     restart: unless-stopped
 
   # ── Sonarr ───────────────────────────────────────────────────────────────────
@@ -143,7 +141,6 @@ services:
       - ./config/sonarr:/config
       - ./downloads:/downloads
       - ./media:/media
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
     restart: unless-stopped
 
   # ── Prowlarr ─────────────────────────────────────────────────────────────────
@@ -162,7 +159,6 @@ services:
     volumes:
       - ./config/prowlarr:/config
       - ./downloads:/downloads
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
     restart: unless-stopped
 
   # ── FlareSolverr ─────────────────────────────────────────────────────────────
@@ -179,8 +175,7 @@ services:
       - LOG_HTML=false
       - CAPTCHA_SOLVER=none
       - TZ=${TZ:-America/New_York}
-    volumes:
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    volumes: [] # No mounts needed
     restart: unless-stopped
 
   # ── Radarr ───────────────────────────────────────────────────────────────────
@@ -200,7 +195,6 @@ services:
       - ./config/radarr:/config
       - ./media:/media
       - ./downloads:/downloads
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
     restart: unless-stopped
 
   # ── Seerr (Overseerr fork) ───────────────────────────────────────────────────
@@ -219,7 +213,6 @@ services:
       - PORT=5055
     volumes:
       - ./config/seerr:/app/config
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://127.0.0.1:5055/api/v1/status || exit 1
       start_period: 60s
@@ -239,7 +232,6 @@ services:
         restart: true
     volumes:
       - ./config/profilarr:/config
-      - ./scripts/resolv.conf:/etc/resolv.conf:ro
     restart: unless-stopped
 
 volumes:
