@@ -33,6 +33,9 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     # ── All arr-stack ports are published HERE (like gluetun) ─────────────────
     ports:
       # qBittorrent
@@ -78,10 +81,168 @@ services:
       start_period: 120s # Allow ~60s extraction + ~30s daemon startup + ~30s buffer
       retries: 3
     restart: unless-stopped
+
   # ── qBittorrent ─────────────────────────────────────────────────────────────
-  # Port forwarding: ExpressVPN does NOT support it.
-  # Maximise throughput with high peer limits + DHT + PEX instead.
-  # See README.md → qBittorrent Performance Tuning
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-America/New_York}
+      - WEBUI_PORT=8085
+    volumes:
+      - ./config/qbittorrent:/config
+      - ./downloads:/downloads
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    restart: unless-stopped
+
+  # ── Jackett ──────────────────────────────────────────────────────────────────
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-America/New_York}
+      - AUTO_UPDATE=true
+    volumes:
+      - ./config/jackett:/config
+      - ./downloads/blackhole:/downloads
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    restart: unless-stopped
+
+  # ── Sonarr ───────────────────────────────────────────────────────────────────
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-America/New_York}
+    volumes:
+      - ./config/sonarr:/config
+      - ./downloads:/downloads
+      - ./media:/media
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    restart: unless-stopped
+
+  # ── Prowlarr ─────────────────────────────────────────────────────────────────
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-America/New_York}
+    volumes:
+      - ./config/prowlarr:/config
+      - ./downloads:/downloads
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    restart: unless-stopped
+
+  # ── FlareSolverr ─────────────────────────────────────────────────────────────
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_HTML=false
+      - CAPTCHA_SOLVER=none
+      - TZ=${TZ:-America/New_York}
+    volumes:
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    restart: unless-stopped
+
+  # ── Radarr ───────────────────────────────────────────────────────────────────
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-America/New_York}
+    volumes:
+      - ./config/radarr:/config
+      - ./media:/media
+      - ./downloads:/downloads
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    restart: unless-stopped
+
+  # ── Seerr (Overseerr fork) ───────────────────────────────────────────────────
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    init: true
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TZ:-America/New_York}
+      - PORT=5055
+    volumes:
+      - ./config/seerr:/app/config
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://127.0.0.1:5055/api/v1/status || exit 1
+      start_period: 60s
+      timeout: 3s
+      interval: 15s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Profilarr ────────────────────────────────────────────────────────────────
+  profilarr:
+    image: santiagosayshey/profilarr:latest
+    container_name: profilarr
+    network_mode: service:expressvpn
+    depends_on:
+      expressvpn:
+        condition: service_healthy
+        restart: true
+    volumes:
+      - ./config/profilarr:/config
+      - ./scripts/resolv.conf:/etc/resolv.conf:ro
+    restart: unless-stopped
 
 volumes:
   expressvpn_data:
+
+
