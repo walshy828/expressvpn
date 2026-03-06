@@ -340,24 +340,42 @@ iptables -t nat -A POSTROUTING -o "${TUN_IFACE}" -j MASQUERADE
 #           DROP all new outbound on eth0/physical interfaces.
 #
 # Find the physical (non-VPN, non-loopback, non-virtual) interface
-# Match eth*, ens*, enp*, wlan* — the real container/host NIC assigned by Docker
 ETH_IFACE=$(ip -o link show | awk -F': ' '$2 ~ /^(eth|ens|enp|wlan)/ {print $2; exit}' | cut -d'@' -f1)
 log "Physical interface for OUTPUT kill-switch: ${ETH_IFACE}"
 
-# Allow all traffic on the VPN tunnel (outbound to VPN)
+# ── OUTPUT kill-switch ─────────────────────────────────────────────────────────
+# Sibling containers (network_mode: service:expressvpn) share this network
+# NAMESPACE. Their packets appear in the OUTPUT chain — not FORWARD.
+# They run as non-root (PUID/PGID=1000). We must allow them to originate
+# traffic that will be picked up by the VPN daemon and sent via tun0.
+#
+# Strategy:
+#   1. Always allow tun0 output (all VPN traffic goes here)
+#   2. Always allow loopback
+#   3. Allow root (UID 0) on eth0 — this is the VPN daemon itself
+#   4. Allow established/related on eth0 — return packets need this
+#   5. Allow LAN-bound traffic on eth0 (for NAS, local services)
+#   6. DROP anything else on eth0 — kills cleartext leaks for internet traffic
+
+# Allow all traffic on the VPN tunnel — this is the critical path for siblings
 iptables -A OUTPUT -o "${TUN_IFACE}" -j ACCEPT
 # Allow loopback
 iptables -A OUTPUT -o lo -j ACCEPT
-# Allow established/related return packets on eth0 (e.g. DHCP, ARP, DNS replies)
+# Allow VPN daemon (root) to reach VPN servers and do handshakes via eth0
+iptables -A OUTPUT -o "${ETH_IFACE}" -m owner --uid-owner 0 -j ACCEPT
+# Allow established/related return packets on eth0 (DHCP, ARP, replies)
 iptables -A OUTPUT -o "${ETH_IFACE}" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-# Allow the VPN daemon itself to reach VPN servers over eth0 (lightway handshake, ICMP)
-# Without this the daemon can't establish the tunnel on first boot
-iptables -A OUTPUT -o "${ETH_IFACE}" -m owner --uid-owner 0 -p udp -j ACCEPT
-iptables -A OUTPUT -o "${ETH_IFACE}" -m owner --uid-owner 0 -p tcp -j ACCEPT
-# Block all other new outbound on physical interface — kills cleartext leak
+# Allow traffic destined for LAN subnets via eth0 (NAS, local services)
+IFS=',' read -ra SUBNETS_OUT <<< "${FIREWALL_OUTBOUND_SUBNETS}"
+for SUBNET in "${SUBNETS_OUT[@]}"; do
+  SUBNET="${SUBNET// /}"
+  [ -z "$SUBNET" ] && continue
+  iptables -A OUTPUT -o "${ETH_IFACE}" -d "${SUBNET}" -j ACCEPT
+done
+# Block all other new outbound on physical interface — prevents cleartext leak
 iptables -A OUTPUT -o "${ETH_IFACE}" -j DROP
 
-log "OUTPUT kill-switch: new cleartext egress on ${ETH_IFACE} is blocked for non-root."
+log "OUTPUT kill-switch: active on ${ETH_IFACE}. VPN tunnel (${TUN_IFACE}) traffic is fully permitted."
 
 # ── LAN bypass exceptions (e.g. Sonarr → NAS, or host admin access) ──────────
 IFS=',' read -ra SUBNETS <<< "${FIREWALL_OUTBOUND_SUBNETS}"
@@ -371,15 +389,35 @@ done
 
 log "iptables NAT + kill-switch configured."
 
-# ── Transparent DNS Proxy ──────────────────────────────────────────────────
-# Intercept all outgoing DNS queries (port 53) from sibling containers
-# and redirect them to Cloudflare (1.1.1.1). This ensures DNS works
-# even if siblings are stuck with Docker's internal 127.0.0.11 relay.
-iptables -t nat -A PREROUTING -p udp --dport 53 -j DNAT --to-destination 1.1.1.1
-iptables -t nat -A PREROUTING -p tcp --dport 53 -j DNAT --to-destination 1.1.1.1
-iptables -t nat -A OUTPUT -p udp --dport 53 -j DNAT --to-destination 1.1.1.1
-iptables -t nat -A OUTPUT -p tcp --dport 53 -j DNAT --to-destination 1.1.1.1
-log "Transparent DNS proxy: enabled (intercepting port 53 → 1.1.1.1)"
+# ── DNS Proxy for Sibling Containers (dnsmasq on 127.0.0.11) ───────────────────
+# Docker injects `nameserver 127.0.0.11` into sibling containers sharing this
+# network namespace. iptables DNAT cannot intercept loopback traffic, so we
+# bind dnsmasq directly to 127.0.0.11:53, forwarding all queries to Cloudflare
+# through the VPN tunnel. This is the correct and permanent fix.
+log "Starting dnsmasq DNS proxy on 127.0.0.11:53 → 1.1.1.1 ..."
+
+# Ensure 127.0.0.11 is bound on the loopback
+ip addr add 127.0.0.11/8 dev lo 2>/dev/null || true
+
+# Write a minimal dnsmasq config
+cat > /tmp/dnsmasq-vpn.conf <<EOF
+listen-address=127.0.0.11
+bind-interfaces
+port=53
+no-resolv
+server=1.1.1.1
+server=8.8.8.8
+cache-size=1000
+log-queries=no
+no-hosts
+EOF
+
+# Stop any existing dnsmasq (in case of restart)
+kill "$(cat /tmp/dnsmasq-vpn.pid 2>/dev/null)" 2>/dev/null || true
+
+# Start dnsmasq in background
+dnsmasq --conf-file=/tmp/dnsmasq-vpn.conf --pid-file=/tmp/dnsmasq-vpn.pid
+log "dnsmasq DNS proxy: running on 127.0.0.11:53"
 
 # ── MTU/MSS Clamping (Linux VM Fix) ──────────────────────────────────────────
 # Prevents network hangs/timeouts on Proxmox/Linux VMs by ensuring TCP

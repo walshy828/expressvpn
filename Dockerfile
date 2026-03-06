@@ -20,7 +20,7 @@ LABEL org.opencontainers.image.source="https://github.com/expressvpn"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     expect iproute2 iptables ca-certificates procps curl socat python3 \
     psmisc libatomic1 libglib2.0-0 libbrotli1 libdbus-1-3 libasound2 \
-    dbus libxkbcommon0 libxkbcommon-x11-0 libgl1 libegl1 libopengl0 \
+    dbus dnsmasq libxkbcommon0 libxkbcommon-x11-0 libgl1 libegl1 libopengl0 \
     libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
     libsm6 libice6 libfontconfig1 libfreetype6 libxau6 libxdmcp6 \
     && rm -rf /var/lib/apt/lists/*
